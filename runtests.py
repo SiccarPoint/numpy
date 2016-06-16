@@ -11,6 +11,7 @@ Examples::
     $ python runtests.py -t {SAMPLE_TEST}
     $ python runtests.py --ipython
     $ python runtests.py --python somescript.py
+    $ python runtests.py --bench
 
 Run a debugger:
 
@@ -23,6 +24,7 @@ Generate C code coverage listing under build/lcov/:
     $ python runtests.py --lcov-html
 
 """
+from __future__ import division, print_function
 
 #
 # This is a generic test runner script for projects using Numpy's test
@@ -98,11 +100,25 @@ def main(argv):
                         help="Start Unix shell with PYTHONPATH set")
     parser.add_argument("--debug", "-g", action="store_true",
                         help="Debug build")
+    parser.add_argument("--parallel", "-j", type=int, default=0,
+                        help="Number of parallel jobs during build")
     parser.add_argument("--show-build-log", action="store_true",
                         help="Show build output rather than using a log file")
+    parser.add_argument("--bench", action="store_true",
+                        help="Run benchmark suite instead of test suite")
+    parser.add_argument("--bench-compare", action="store", metavar="COMMIT",
+                        help=("Compare benchmark results to COMMIT. "
+                              "Note that you need to commit your changes first!"))
+    parser.add_argument("--raise-warnings", default=None, type=str,
+                        choices=('develop', 'release'),
+                        help="if 'develop', some warnings are treated as errors")
     parser.add_argument("args", metavar="ARGS", default=[], nargs=REMAINDER,
                         help="Arguments to pass to Nose, Python or shell")
     args = parser.parse_args(argv)
+
+    if args.bench_compare:
+        args.bench = True
+        args.no_build = True # ASV does the building
 
     if args.lcov_html:
         # generate C code coverage output
@@ -115,6 +131,10 @@ def main(argv):
 
     if args.gcov:
         gcov_reset_counters()
+
+    if args.debug and args.bench:
+        print("*** Benchmarks should not be run against debug "
+              "version; remove -g flag ***")
 
     if not args.no_build:
         site_dir = build_project(args)
@@ -168,6 +188,61 @@ def main(argv):
         extra_argv += ['--cover-html',
                        '--cover-html-dir='+dst_dir]
 
+    if args.bench:
+        # Run ASV
+        items = extra_argv
+        if args.tests:
+            items += args.tests
+        if args.submodule:
+            items += [args.submodule]
+
+        bench_args = []
+        for a in items:
+            bench_args.extend(['--bench', a])
+
+        if not args.bench_compare:
+            cmd = ['asv', 'run', '-n', '-e', '--python=same'] + bench_args
+            os.chdir(os.path.join(ROOT_DIR, 'benchmarks'))
+            os.execvp(cmd[0], cmd)
+            sys.exit(1)
+        else:
+            commits = [x.strip() for x in args.bench_compare.split(',')]
+            if len(commits) == 1:
+                commit_a = commits[0]
+                commit_b = 'HEAD'
+            elif len(commits) == 2:
+                commit_a, commit_b = commits
+            else:
+                p.error("Too many commits to compare benchmarks for")
+
+            # Check for uncommitted files
+            if commit_b == 'HEAD':
+                r1 = subprocess.call(['git', 'diff-index', '--quiet',
+                                      '--cached', 'HEAD'])
+                r2 = subprocess.call(['git', 'diff-files', '--quiet'])
+                if r1 != 0 or r2 != 0:
+                    print("*"*80)
+                    print("WARNING: you have uncommitted changes --- "
+                          "these will NOT be benchmarked!")
+                    print("*"*80)
+
+            # Fix commit ids (HEAD is local to current repo)
+            p = subprocess.Popen(['git', 'rev-parse', commit_b],
+                                 stdout=subprocess.PIPE)
+            out, err = p.communicate()
+            commit_b = out.strip()
+
+            p = subprocess.Popen(['git', 'rev-parse', commit_a],
+                                 stdout=subprocess.PIPE)
+            out, err = p.communicate()
+            commit_a = out.strip()
+
+            cmd = ['asv', 'continuous', '-e', '-f', '1.05',
+                   commit_a, commit_b] + bench_args
+            os.chdir(os.path.join(ROOT_DIR, 'benchmarks'))
+            os.execvp(cmd[0], cmd)
+            sys.exit(1)
+
     test_dir = os.path.join(ROOT_DIR, 'build', 'test')
 
     if args.build_only:
@@ -217,6 +292,7 @@ def main(argv):
                       verbose=args.verbose,
                       extra_argv=extra_argv,
                       doctests=args.doctests,
+                      raise_warnings=args.raise_warnings,
                       coverage=args.coverage)
     finally:
         os.chdir(cwd)
@@ -268,9 +344,22 @@ def build_project(args):
             env['F90'] = 'gfortran --coverage '
             env['LDSHARED'] = cvars['LDSHARED'] + ' --coverage'
             env['LDFLAGS'] = " ".join(cvars['LDSHARED'].split()[1:]) + ' --coverage'
-        cmd += ["build"]
 
-    cmd += ['install', '--prefix=' + dst_dir]
+    cmd += ["build"]
+    if args.parallel > 1:
+        cmd += ["-j", str(args.parallel)]
+    # Install; avoid producing eggs so numpy can be imported from dst_dir.
+    cmd += ['install', '--prefix=' + dst_dir,
+            '--single-version-externally-managed',
+            '--record=' + dst_dir + 'tmp_install_log.txt']
+
+    from distutils.sysconfig import get_python_lib
+    site_dir = get_python_lib(prefix=dst_dir, plat_specific=True)
+    # easy_install won't install to a path that Python by default cannot see
+    # and isn't on the PYTHONPATH.  Plus, it has to exist.
+    if not os.path.exists(site_dir):
+        os.makedirs(site_dir)
+    env['PYTHONPATH'] = site_dir
 
     log_filename = os.path.join(ROOT_DIR, 'build.log')
 
@@ -309,9 +398,6 @@ def build_project(args):
             print("Build failed!")
         sys.exit(1)
 
-    from distutils.sysconfig import get_python_lib
-    site_dir = get_python_lib(prefix=dst_dir, plat_specific=True)
-
     return site_dir
 
 
@@ -347,8 +433,8 @@ def lcov_generate():
                      '--output-file', LCOV_OUTPUT_FILE])
 
     print("Generating lcov HTML output...")
-    ret = subprocess.call(['genhtml', '-q', LCOV_OUTPUT_FILE, 
-                           '--output-directory', LCOV_HTML_DIR, 
+    ret = subprocess.call(['genhtml', '-q', LCOV_OUTPUT_FILE,
+                           '--output-directory', LCOV_HTML_DIR,
                            '--legend', '--highlight'])
     if ret != 0:
         print("genhtml failed!")

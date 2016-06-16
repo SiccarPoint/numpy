@@ -57,7 +57,7 @@ def fliplr(m):
 
     Notes
     -----
-    Equivalent to A[:,::-1]. Requires the array to be at least 2-D.
+    Equivalent to m[:,::-1]. Requires the array to be at least 2-D.
 
     Examples
     --------
@@ -72,7 +72,7 @@ def fliplr(m):
            [ 3.,  0.,  0.]])
 
     >>> A = np.random.randn(2,3,5)
-    >>> np.all(np.fliplr(A)==A[:,::-1,...])
+    >>> np.all(np.fliplr(A) == A[:,::-1,...])
     True
 
     """
@@ -107,7 +107,7 @@ def flipud(m):
 
     Notes
     -----
-    Equivalent to ``A[::-1,...]``.
+    Equivalent to ``m[::-1,...]``.
     Does not require the array to be two-dimensional.
 
     Examples
@@ -123,7 +123,7 @@ def flipud(m):
            [ 1.,  0.,  0.]])
 
     >>> A = np.random.randn(2,3,5)
-    >>> np.all(np.flipud(A)==A[::-1,...])
+    >>> np.all(np.flipud(A) == A[::-1,...])
     True
 
     >>> np.flipud([1,2])
@@ -649,7 +649,7 @@ def histogram2d(x, y, bins=10, range=None, normed=False, weights=None):
     >>> import matplotlib as mpl
     >>> import matplotlib.pyplot as plt
 
-    Construct a 2D-histogram with variable bin width. First define the bin
+    Construct a 2-D histogram with variable bin width. First define the bin
     edges:
 
     >>> xedges = [0, 1, 1.5, 3, 5]
@@ -664,7 +664,7 @@ def histogram2d(x, y, bins=10, range=None, normed=False, weights=None):
     Or we fill the histogram H with a determined bin content:
 
     >>> H = np.ones((4, 4)).cumsum().reshape(4, 4)
-    >>> print H[::-1]  # This shows the bin content in the order as plotted
+    >>> print(H[::-1])  # This shows the bin content in the order as plotted
     [[ 13.  14.  15.  16.]
      [  9.  10.  11.  12.]
      [  5.   6.   7.   8.]
@@ -676,7 +676,7 @@ def histogram2d(x, y, bins=10, range=None, normed=False, weights=None):
     >>> ax = fig.add_subplot(131)
     >>> ax.set_title('imshow: equidistant')
     >>> im = plt.imshow(H, interpolation='nearest', origin='low',
-                    extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
+    ...            extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]])
 
     pcolormesh can display exact bin edges:
 

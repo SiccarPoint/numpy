@@ -2152,6 +2152,51 @@ class TestRegression(TestCase):
         assert_equal(uf(a), ())
         assert_array_equal(a, [[3, 2, 1], [5, 4], [9, 7, 8, 6]])
 
+    def test_leak_in_structured_dtype_comparison(self):
+        # gh-6250
+        recordtype = np.dtype([('a', np.float64),
+                               ('b', np.int32),
+                               ('d', (np.str, 5))])
+
+        # Simple case
+        a = np.zeros(2, dtype=recordtype)
+        for i in range(100):
+            a == a
+        assert_(sys.getrefcount(a) < 10)
+
+        # The case in the bug report.
+        before = sys.getrefcount(a)
+        u, v = a[0], a[1]
+        u == v
+        del u, v
+        gc.collect()
+        after = sys.getrefcount(a)
+        assert_equal(before, after)
+
+    def test_empty_percentile(self):
+        # gh-6530 / gh-6553
+        assert_array_equal(np.percentile(np.arange(10), []), np.array([]))
+
+    def test_void_compare_segfault(self):
+        # gh-6922. The following should not segfault
+        a = np.ones(3, dtype=[('object', 'O'), ('int', '<i2')])
+        a.sort()
+
+    def test_reshape_size_overflow(self):
+        # gh-7455
+        a = np.ones(20)[::2]
+        if np.dtype(np.intp).itemsize == 8:
+            # 64 bit. The following are the prime factors of 2**63 + 5,
+            # plus a leading 2, so when multiplied together as int64,
+            # the result overflows to a total size of 10.
+            new_shape = (2, 13, 419, 691, 823, 2977518503)
+        else:
+            # 32 bit. The following are the prime factors of 2**31 + 5,
+            # plus a leading 2, so when multiplied together as int32,
+            # the result overflows to a total size of 10.
+            new_shape = (2, 7, 7, 43826197)
+        assert_raises(ValueError, a.reshape, new_shape)
+
 
 if __name__ == "__main__":
     run_module_suite()

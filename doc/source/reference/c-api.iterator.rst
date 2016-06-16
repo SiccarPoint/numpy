@@ -487,7 +487,7 @@ Construction and Destruction
             If the operand is flagged as write-only and a copy is needed,
             an uninitialized temporary array will be created and then copied
             to back to ``op[i]`` on destruction, instead of doing
-            the unecessary copy operation.
+            the unnecessary copy operation.
 
         .. c:var:: NPY_ITER_NBO
         .. c:var:: NPY_ITER_ALIGNED
@@ -1221,6 +1221,9 @@ functions provide that information.
     This pointer may be cached before the iteration loop, calling
     ``iternext`` will not change it. This function may be safely
     called without holding the Python GIL.
+    
+    **WARNING**: While the pointer may be cached, its values may
+    change if the iterator is buffered.
 
 .. c:function:: npy_intp* NpyIter_GetInnerLoopSizePtr(NpyIter* iter)
 

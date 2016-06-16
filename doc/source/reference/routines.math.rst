@@ -54,9 +54,12 @@ Sums, products, differences
 
    prod
    sum
+   nanprod
    nansum
    cumprod
    cumsum
+   nancumprod
+   nancumsum
    diff
    ediff1d
    gradient

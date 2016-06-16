@@ -121,6 +121,38 @@ class TestFromrecords(TestCase):
         assert_equal(type(rv), np.recarray)
         assert_equal(rv.dtype.type, np.record)
 
+        #check that getitem also preserves np.recarray and np.record
+        r = np.rec.array(np.ones(4, dtype=[('a', 'i4'), ('b', 'i4'),
+                                           ('c', 'i4,i4')]))
+        assert_equal(r['c'].dtype.type, np.record)
+        assert_equal(type(r['c']), np.recarray)
+        assert_equal(r[['a', 'b']].dtype.type, np.record)
+        assert_equal(type(r[['a', 'b']]), np.recarray)
+
+        #and that it preserves subclasses (gh-6949)
+        class C(np.recarray):
+            pass
+
+        c = r.view(C)
+        assert_equal(type(c['c']), C)
+
+        # check that accessing nested structures keep record type, but
+        # not for subarrays, non-void structures, non-structured voids
+        test_dtype = [('a', 'f4,f4'), ('b', 'V8'), ('c', ('f4',2)),
+                      ('d', ('i8', 'i4,i4'))]
+        r = np.rec.array([((1,1), b'11111111', [1,1], 1),
+                          ((1,1), b'11111111', [1,1], 1)], dtype=test_dtype)
+        assert_equal(r.a.dtype.type, np.record)
+        assert_equal(r.b.dtype.type, np.void)
+        assert_equal(r.c.dtype.type, np.float32)
+        assert_equal(r.d.dtype.type, np.int64)
+        # check the same, but for views
+        r = np.rec.array(np.ones(4, dtype='i4,i4'))
+        assert_equal(r.view('f4,f4').dtype.type, np.record)
+        assert_equal(r.view(('i4',2)).dtype.type, np.int32)
+        assert_equal(r.view('V8').dtype.type, np.void)
+        assert_equal(r.view(('i8', 'i4,i4')).dtype.type, np.int64)
+
         #check that we can undo the view
         arrs = [np.ones(4, dtype='f4,i4'), np.ones(4, dtype='f8')]
         for arr in arrs:
@@ -134,6 +166,12 @@ class TestFromrecords(TestCase):
         # make sure non-structured dtypes also show up as rec.array
         a = np.array(np.ones(4, dtype='f8'))
         assert_(repr(np.rec.array(a)).startswith('rec.array'))
+
+        # check that the 'np.record' part of the dtype isn't shown
+        a = np.rec.array(np.ones(3, dtype='i4,i4'))
+        assert_equal(repr(a).find('numpy.record'), -1)
+        a = np.rec.array(np.ones(3, dtype='i4'))
+        assert_(repr(a).find('dtype=int32') != -1)
 
     def test_recarray_from_names(self):
         ra = np.rec.array([
@@ -216,6 +254,20 @@ class TestFromrecords(TestCase):
         assert_equal(a[0]['qux'].D, asbytes('fgehi'))
         assert_equal(a[0]['qux']['D'], asbytes('fgehi'))
 
+    def test_zero_width_strings(self):
+        # Test for #6430, based on the test case from #1901
+
+        cols = [['test'] * 3, [''] * 3]
+        rec = np.rec.fromarrays(cols)
+        assert_equal(rec['f0'], ['test', 'test', 'test'])
+        assert_equal(rec['f1'], ['', '', ''])
+
+        dt = np.dtype([('f0', '|S4'), ('f1', '|S')])
+        rec = np.rec.fromarrays(cols, dtype=dt)
+        assert_equal(rec.itemsize, 4)
+        assert_equal(rec['f0'], [b'test', b'test', b'test'])
+        assert_equal(rec['f1'], [b'', b'', b''])
+
 
 class TestRecord(TestCase):
     def setUp(self):
@@ -260,6 +312,15 @@ class TestRecord(TestCase):
         a = self.data
         assert_equal(a, pickle.loads(pickle.dumps(a)))
         assert_equal(a[0], pickle.loads(pickle.dumps(a[0])))
+
+    def test_pickle_3(self):
+        # Issue #7140
+        a = self.data
+        pa = pickle.loads(pickle.dumps(a[0]))
+        assert_(pa.flags.c_contiguous)
+        assert_(pa.flags.f_contiguous)
+        assert_(pa.flags.writeable)
+        assert_(pa.flags.aligned)
 
     def test_objview_record(self):
         # https://github.com/numpy/numpy/issues/2599

@@ -23,7 +23,7 @@ from numpy.core import (
     csingle, cdouble, inexact, complexfloating, newaxis, ravel, all, Inf, dot,
     add, multiply, sqrt, maximum, fastCopyAndTranspose, sum, isfinite, size,
     finfo, errstate, geterrobj, longdouble, rollaxis, amin, amax, product, abs,
-    broadcast, atleast_2d, intp, asanyarray, isscalar
+    broadcast, atleast_2d, intp, asanyarray, isscalar, object_
     )
 from numpy.lib import triu, asfarray
 from numpy.linalg import lapack_lite, _umath_linalg
@@ -1012,9 +1012,10 @@ def eig(a):
     w : (..., M) array
         The eigenvalues, each repeated according to its multiplicity.
         The eigenvalues are not necessarily ordered. The resulting
-        array will be always be of complex type. When `a` is real
-        the resulting eigenvalues will be real (0 imaginary part) or
-        occur in conjugate pairs
+        array will be of complex type, unless the imaginary part is
+        zero in which case it will be cast to a real type. When `a`
+        is real the resulting eigenvalues will be real (0 imaginary
+        part) or occur in conjugate pairs
 
     v : (..., M, M) array
         The normalized (unit "length") eigenvectors, such that the
@@ -1381,7 +1382,7 @@ def cond(x, p=None):
 
     Parameters
     ----------
-    x : (M, N) array_like
+    x : (..., M, N) array_like
         The matrix whose condition number is sought.
     p : {None, 1, -1, 2, -2, inf, -inf, 'fro'}, optional
         Order of the norm:
@@ -1450,12 +1451,12 @@ def cond(x, p=None):
     0.70710678118654746
 
     """
-    x = asarray(x) # in case we have a matrix
+    x = asarray(x)  # in case we have a matrix
     if p is None:
         s = svd(x, compute_uv=False)
-        return s[0]/s[-1]
+        return s[..., 0]/s[..., -1]
     else:
-        return norm(x, p)*norm(inv(x), p)
+        return norm(x, p, axis=(-2, -1)) * norm(inv(x), p, axis=(-2, -1))
 
 
 def matrix_rank(M, tol=None):
@@ -1621,7 +1622,7 @@ def pinv(a, rcond=1e-15 ):
         if s[i] > cutoff:
             s[i] = 1./s[i]
         else:
-            s[i] = 0.;
+            s[i] = 0.
     res = dot(transpose(vt), multiply(s[:, newaxis], transpose(u)))
     return wrap(res)
 
@@ -1803,8 +1804,9 @@ def lstsq(a, b, rcond=-1):
         of `b`.
     rcond : float, optional
         Cut-off ratio for small singular values of `a`.
-        Singular values are set to zero if they are smaller than `rcond`
-        times the largest singular value of `a`.
+        For the purposes of rank determination, singular values are treated
+        as zero if they are smaller than `rcond` times the largest singular
+        value of `a`.
 
     Returns
     -------
@@ -1852,7 +1854,7 @@ def lstsq(a, b, rcond=-1):
            [ 3.,  1.]])
 
     >>> m, c = np.linalg.lstsq(A, y)[0]
-    >>> print m, c
+    >>> print(m, c)
     1.0 -0.95
 
     Plot the data along with the fitted line:
@@ -2059,22 +2061,22 @@ def norm(x, ord=None, axis=None, keepdims=False):
     >>> LA.norm(b, 'fro')
     7.745966692414834
     >>> LA.norm(a, np.inf)
-    4
+    4.0
     >>> LA.norm(b, np.inf)
-    9
+    9.0
     >>> LA.norm(a, -np.inf)
-    0
+    0.0
     >>> LA.norm(b, -np.inf)
-    2
+    2.0
 
     >>> LA.norm(a, 1)
-    20
+    20.0
     >>> LA.norm(b, 1)
-    7
+    7.0
     >>> LA.norm(a, -1)
     -4.6566128774142013e-010
     >>> LA.norm(b, -1)
-    6
+    6.0
     >>> LA.norm(a, 2)
     7.745966692414834
     >>> LA.norm(b, 2)
@@ -2098,7 +2100,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
     >>> LA.norm(c, axis=1)
     array([ 3.74165739,  4.24264069])
     >>> LA.norm(c, ord=1, axis=1)
-    array([6, 6])
+    array([ 6.,  6.])
 
     Using the `axis` argument to compute matrix norms:
 
@@ -2110,6 +2112,9 @@ def norm(x, ord=None, axis=None, keepdims=False):
 
     """
     x = asarray(x)
+
+    if not issubclass(x.dtype.type, (inexact, object_)):
+        x = x.astype(float)
 
     # Immediately handle some default, simple, fast, and common cases.
     if axis is None:
@@ -2146,7 +2151,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
             return abs(x).min(axis=axis, keepdims=keepdims)
         elif ord == 0:
             # Zero norm
-            return (x != 0).sum(axis=axis, keepdims=keepdims)
+            return (x != 0).astype(float).sum(axis=axis, keepdims=keepdims)
         elif ord == 1:
             # special case for speedup
             return add.reduce(abs(x), axis=axis, keepdims=keepdims)
@@ -2342,12 +2347,12 @@ def _multi_dot_three(A, B, C):
     than `_multi_dot_matrix_chain_order`
 
     """
-    # cost1 = cost((AB)C)
-    cost1 = (A.shape[0] * A.shape[1] * B.shape[1] +  # (AB)
-             A.shape[0] * B.shape[1] * C.shape[1])   # (--)C
-    # cost2 = cost((AB)C)
-    cost2 = (B.shape[0] * B.shape[1] * C.shape[1] +  #  (BC)
-             A.shape[0] * A.shape[1] * C.shape[1])   # A(--)
+    a0, a1b0 = A.shape
+    b1c0, c1 = C.shape
+    # cost1 = cost((AB)C) = a0*a1b0*b1c0 + a0*b1c0*c1
+    cost1 = a0 * b1c0 * (a1b0 + c1)
+    # cost2 = cost(A(BC)) = a1b0*b1c0*c1 + a0*a1b0*c1
+    cost2 = a1b0 * c1 * (a0 + b1c0)
 
     if cost1 < cost2:
         return dot(dot(A, B), C)

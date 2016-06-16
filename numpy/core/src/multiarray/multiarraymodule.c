@@ -60,6 +60,7 @@ NPY_NO_EXPORT int NPY_NUMUSERTYPES = 0;
 #include "vdot.h"
 #include "templ_common.h" /* for npy_mul_with_overflow_intp */
 #include "compiled_base.h"
+#include "mem_overlap.h"
 
 /* Only here for API compatibility */
 NPY_NO_EXPORT PyTypeObject PyBigArray_Type;
@@ -812,121 +813,70 @@ new_array_for_sum(PyArrayObject *ap1, PyArrayObject *ap2, PyArrayObject* out,
 NPY_NO_EXPORT PyObject *
 PyArray_InnerProduct(PyObject *op1, PyObject *op2)
 {
-    PyArrayObject *ap1, *ap2, *ret = NULL;
-    PyArrayIterObject *it1, *it2;
-    npy_intp i, j, l;
-    int typenum, nd, axis;
-    npy_intp is1, is2, os;
-    char *op;
-    npy_intp dimensions[NPY_MAXDIMS];
-    PyArray_DotFunc *dot;
-    PyArray_Descr *typec;
-    NPY_BEGIN_THREADS_DEF;
+    PyArrayObject *ap1 = NULL;
+    PyArrayObject *ap2 = NULL;
+    int typenum;
+    PyArray_Descr *typec = NULL;
+    PyObject* ap2t = NULL;
+    npy_intp dims[NPY_MAXDIMS];
+    PyArray_Dims newaxes = {dims, 0};
+    int i;
+    PyObject* ret = NULL;
 
     typenum = PyArray_ObjectType(op1, 0);
     typenum = PyArray_ObjectType(op2, typenum);
-
     typec = PyArray_DescrFromType(typenum);
     if (typec == NULL) {
-        return NULL;
-    }
-    Py_INCREF(typec);
-    ap1 = (PyArrayObject *)PyArray_FromAny(op1, typec, 0, 0,
-                                        NPY_ARRAY_ALIGNED, NULL);
-    if (ap1 == NULL) {
-        Py_DECREF(typec);
-        return NULL;
-    }
-    ap2 = (PyArrayObject *)PyArray_FromAny(op2, typec, 0, 0,
-                                        NPY_ARRAY_ALIGNED, NULL);
-    if (ap2 == NULL) {
-        Py_DECREF(ap1);
-        return NULL;
-    }
-
-#if defined(HAVE_CBLAS)
-    if (PyArray_NDIM(ap1) <= 2 && PyArray_NDIM(ap2) <= 2 &&
-            (NPY_DOUBLE == typenum || NPY_CDOUBLE == typenum ||
-             NPY_FLOAT == typenum || NPY_CFLOAT == typenum)) {
-        return cblas_innerproduct(typenum, ap1, ap2);
-    }
-#endif
-
-    if (PyArray_NDIM(ap1) == 0 || PyArray_NDIM(ap2) == 0) {
-        ret = (PyArray_NDIM(ap1) == 0 ? ap1 : ap2);
-        ret = (PyArrayObject *)Py_TYPE(ret)->tp_as_number->nb_multiply(
-                                            (PyObject *)ap1, (PyObject *)ap2);
-        Py_DECREF(ap1);
-        Py_DECREF(ap2);
-        return (PyObject *)ret;
-    }
-
-    l = PyArray_DIMS(ap1)[PyArray_NDIM(ap1) - 1];
-    if (PyArray_DIMS(ap2)[PyArray_NDIM(ap2) - 1] != l) {
-        dot_alignment_error(ap1, PyArray_NDIM(ap1) - 1,
-                            ap2, PyArray_NDIM(ap2) - 1);
+        PyErr_SetString(PyExc_TypeError, "Cannot find a common data type.");
         goto fail;
     }
 
-    nd = PyArray_NDIM(ap1) + PyArray_NDIM(ap2) - 2;
-    j = 0;
-    for (i = 0; i < PyArray_NDIM(ap1) - 1; i++) {
-        dimensions[j++] = PyArray_DIMS(ap1)[i];
+    Py_INCREF(typec);
+    ap1 = (PyArrayObject *)PyArray_FromAny(op1, typec, 0, 0,
+                                           NPY_ARRAY_ALIGNED, NULL);
+    if (ap1 == NULL) {
+        Py_DECREF(typec);
+        goto fail;
     }
-    for (i = 0; i < PyArray_NDIM(ap2) - 1; i++) {
-        dimensions[j++] = PyArray_DIMS(ap2)[i];
+    ap2 = (PyArrayObject *)PyArray_FromAny(op2, typec, 0, 0,
+                                           NPY_ARRAY_ALIGNED, NULL);
+    if (ap2 == NULL) {
+        goto fail;
     }
 
-    /*
-     * Need to choose an output array that can hold a sum
-     * -- use priority to determine which subtype.
-     */
-    ret = new_array_for_sum(ap1, ap2, NULL, nd, dimensions, typenum);
+    newaxes.len = PyArray_NDIM(ap2);
+    if ((PyArray_NDIM(ap1) >= 1) && (newaxes.len >= 2)) {
+        for (i = 0; i < newaxes.len - 2; i++) {
+            dims[i] = (npy_intp)i;
+        }
+        dims[newaxes.len - 2] = newaxes.len - 1;
+        dims[newaxes.len - 1] = newaxes.len - 2;
+
+        ap2t = PyArray_Transpose(ap2, &newaxes);
+        if (ap2t == NULL) {
+            goto fail;
+        }
+    }
+    else {
+        ap2t = (PyObject *)ap2;
+        Py_INCREF(ap2);
+    }
+
+    ret = PyArray_MatrixProduct2((PyObject *)ap1, ap2t, NULL);
     if (ret == NULL) {
         goto fail;
     }
-    /* Ensure that multiarray.inner(<Nx0>,<Mx0>) -> zeros((N,M)) */
-    if (PyArray_SIZE(ap1) == 0 && PyArray_SIZE(ap2) == 0) {
-        memset(PyArray_DATA(ret), 0, PyArray_NBYTES(ret));
-    }
 
-    dot = (PyArray_DESCR(ret)->f->dotfunc);
-    if (dot == NULL) {
-        PyErr_SetString(PyExc_ValueError,
-                        "dot not available for this type");
-        goto fail;
-    }
-    is1 = PyArray_STRIDES(ap1)[PyArray_NDIM(ap1) - 1];
-    is2 = PyArray_STRIDES(ap2)[PyArray_NDIM(ap2) - 1];
-    op = PyArray_DATA(ret);
-    os = PyArray_DESCR(ret)->elsize;
-    axis = PyArray_NDIM(ap1) - 1;
-    it1 = (PyArrayIterObject *) PyArray_IterAllButAxis((PyObject *)ap1, &axis);
-    axis = PyArray_NDIM(ap2) - 1;
-    it2 = (PyArrayIterObject *) PyArray_IterAllButAxis((PyObject *)ap2, &axis);
-    NPY_BEGIN_THREADS_DESCR(PyArray_DESCR(ap2));
-    while (it1->index < it1->size) {
-        while (it2->index < it2->size) {
-            dot(it1->dataptr, is1, it2->dataptr, is2, op, l, ret);
-            op += os;
-            PyArray_ITER_NEXT(it2);
-        }
-        PyArray_ITER_NEXT(it1);
-        PyArray_ITER_RESET(it2);
-    }
-    NPY_END_THREADS_DESCR(PyArray_DESCR(ap2));
-    Py_DECREF(it1);
-    Py_DECREF(it2);
-    if (PyErr_Occurred()) {
-        goto fail;
-    }
+
     Py_DECREF(ap1);
     Py_DECREF(ap2);
-    return (PyObject *)ret;
+    Py_DECREF(ap2t);
+    return ret;
 
 fail:
     Py_XDECREF(ap1);
     Py_XDECREF(ap2);
+    Py_XDECREF(ap2t);
     Py_XDECREF(ret);
     return NULL;
 }
@@ -963,7 +913,7 @@ PyArray_MatrixProduct2(PyObject *op1, PyObject *op2, PyArrayObject* out)
     typenum = PyArray_ObjectType(op2, typenum);
     typec = PyArray_DescrFromType(typenum);
     if (typec == NULL) {
-        PyErr_SetString(PyExc_ValueError, "Cannot find a common data type.");
+        PyErr_SetString(PyExc_TypeError, "Cannot find a common data type.");
         return NULL;
     }
 
@@ -1442,13 +1392,9 @@ _equivalent_fields(PyObject *field1, PyObject *field2) {
     if (field1 == NULL || field2 == NULL) {
         return 0;
     }
-#if defined(NPY_PY3K)
+
     val = PyObject_RichCompareBool(field1, field2, Py_EQ);
     if (val != 1 || PyErr_Occurred()) {
-#else
-    val = PyObject_Compare(field1, field2);
-    if (val != 0 || PyErr_Occurred()) {
-#endif
         same = 0;
     }
     else {
@@ -1475,13 +1421,8 @@ _equivalent_subarrays(PyArray_ArrayDescr *sub1, PyArray_ArrayDescr *sub2)
         return 0;
     }
 
-#if defined(NPY_PY3K)
     val = PyObject_RichCompareBool(sub1->shape, sub2->shape, Py_EQ);
     if (val != 1 || PyErr_Occurred()) {
-#else
-    val = PyObject_Compare(sub1->shape, sub2->shape);
-    if (val != 0 || PyErr_Occurred()) {
-#endif
         PyErr_Clear();
         return 0;
     }
@@ -2118,8 +2059,6 @@ array_fromfile(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *keywds)
     }
     fp = npy_PyFile_Dup2(file, "rb", &orig_pos);
     if (fp == NULL) {
-        PyErr_SetString(PyExc_IOError,
-                "first argument must be an open file");
         Py_DECREF(file);
         return NULL;
     }
@@ -2254,8 +2193,10 @@ array_vdot(PyObject *NPY_UNUSED(dummy), PyObject *args)
 {
     int typenum;
     char *ip1, *ip2, *op;
-    npy_intp n, stride;
+    npy_intp n, stride1, stride2;
     PyObject *op1, *op2;
+    npy_intp newdimptr[1] = {-1};
+    PyArray_Dims newdims = {newdimptr, 1};
     PyArrayObject *ap1 = NULL, *ap2  = NULL, *ret = NULL;
     PyArray_Descr *type;
     PyArray_DotFunc *vdot;
@@ -2279,7 +2220,8 @@ array_vdot(PyObject *NPY_UNUSED(dummy), PyObject *args)
         Py_DECREF(type);
         goto fail;
     }
-    op1 = PyArray_Ravel(ap1, NPY_CORDER);
+
+    op1 = PyArray_Newshape(ap1, &newdims, NPY_CORDER);
     if (op1 == NULL) {
         Py_DECREF(type);
         goto fail;
@@ -2291,7 +2233,7 @@ array_vdot(PyObject *NPY_UNUSED(dummy), PyObject *args)
     if (ap2 == NULL) {
         goto fail;
     }
-    op2 = PyArray_Ravel(ap2, NPY_CORDER);
+    op2 = PyArray_Newshape(ap2, &newdims, NPY_CORDER);
     if (op2 == NULL) {
         goto fail;
     }
@@ -2311,7 +2253,8 @@ array_vdot(PyObject *NPY_UNUSED(dummy), PyObject *args)
     }
 
     n = PyArray_DIM(ap1, 0);
-    stride = type->elsize;
+    stride1 = PyArray_STRIDE(ap1, 0);
+    stride2 = PyArray_STRIDE(ap2, 0);
     ip1 = PyArray_DATA(ap1);
     ip2 = PyArray_DATA(ap2);
     op = PyArray_DATA(ret);
@@ -2339,11 +2282,11 @@ array_vdot(PyObject *NPY_UNUSED(dummy), PyObject *args)
     }
 
     if (n < 500) {
-        vdot(ip1, stride, ip2, stride, op, n, NULL);
+        vdot(ip1, stride1, ip2, stride2, op, n, NULL);
     }
     else {
         NPY_BEGIN_THREADS_DESCR(type);
-        vdot(ip1, stride, ip2, stride, op, n, NULL);
+        vdot(ip1, stride1, ip2, stride2, op, n, NULL);
         NPY_END_THREADS_DESCR(type);
     }
 
@@ -3926,7 +3869,7 @@ _PyArray_SigintHandler(int signum)
 {
     PyOS_setsig(signum, SIG_IGN);
     /*
-     * jump buffer may be unitialized as SIGINT allowing functions are usually
+     * jump buffer may be uninitialized as SIGINT allowing functions are usually
      * run in other threads than the master thread that receives the signal
      */
     if (sigint_buf_init > 0) {
@@ -3993,29 +3936,140 @@ test_interrupt(PyObject *NPY_UNUSED(self), PyObject *args)
     return PyInt_FromLong(a);
 }
 
+
 static PyObject *
-array_may_share_memory(PyObject *NPY_UNUSED(ignored), PyObject *args)
+array_shares_memory_impl(PyObject *args, PyObject *kwds, Py_ssize_t default_max_work,
+                         int raise_exceptions)
 {
+    PyObject * self_obj = NULL;
+    PyObject * other_obj = NULL;
     PyArrayObject * self = NULL;
     PyArrayObject * other = NULL;
-    int overlap;
+    PyObject *max_work_obj = NULL;
+    static char *kwlist[] = {"self", "other", "max_work", NULL};
 
-    if (!PyArg_ParseTuple(args, "O&O&", PyArray_Converter, &self,
-                          PyArray_Converter, &other)) {
+    mem_overlap_t result;
+    static PyObject *too_hard_cls = NULL;
+    Py_ssize_t max_work;
+    NPY_BEGIN_THREADS_DEF;
+
+    max_work = default_max_work;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "OO|O", kwlist,
+                                     &self_obj, &other_obj, &max_work_obj)) {
         return NULL;
     }
 
-    overlap = arrays_overlap(self, other);
+    if (PyArray_Check(self_obj)) {
+        self = (PyArrayObject*)self_obj;
+        Py_INCREF(self);
+    }
+    else {
+        /* Use FromAny to enable checking overlap for objects exposing array
+           interfaces etc. */
+        self = (PyArrayObject*)PyArray_FromAny(self_obj, NULL, 0, 0, 0, NULL);
+        if (self == NULL) {
+            goto fail;
+        }
+    }
+
+    if (PyArray_Check(other_obj)) {
+        other = (PyArrayObject*)other_obj;
+        Py_INCREF(other);
+    }
+    else {
+        other = (PyArrayObject*)PyArray_FromAny(other_obj, NULL, 0, 0, 0, NULL);
+        if (other == NULL) {
+            goto fail;
+        }
+    }
+
+    if (max_work_obj == NULL || max_work_obj == Py_None) {
+        /* noop */
+    }
+    else if (PyLong_Check(max_work_obj)) {
+        max_work = PyLong_AsSsize_t(max_work_obj);
+    }
+#if !defined(NPY_PY3K)
+    else if (PyInt_Check(max_work_obj)) {
+        max_work = PyInt_AsSsize_t(max_work_obj);
+    }
+#endif
+    else {
+        PyErr_SetString(PyExc_ValueError, "max_work must be an integer");
+        goto fail;
+    }
+
+    if (max_work < -2) {
+        PyErr_SetString(PyExc_ValueError, "Invalid value for max_work");
+        goto fail;
+    }
+
+    NPY_BEGIN_THREADS;
+    result = solve_may_share_memory(self, other, max_work);
+    NPY_END_THREADS;
+
     Py_XDECREF(self);
     Py_XDECREF(other);
 
-    if (overlap) {
-        Py_RETURN_TRUE;
-    }
-    else {
+    if (result == MEM_OVERLAP_NO) {
         Py_RETURN_FALSE;
     }
+    else if (result == MEM_OVERLAP_YES) {
+        Py_RETURN_TRUE;
+    }
+    else if (result == MEM_OVERLAP_OVERFLOW) {
+        if (raise_exceptions) {
+            PyErr_SetString(PyExc_OverflowError,
+                            "Integer overflow in computing overlap");
+            return NULL;
+        }
+        else {
+            /* Don't know, so say yes */
+            Py_RETURN_TRUE;
+        }
+    }
+    else if (result == MEM_OVERLAP_TOO_HARD) {
+        if (raise_exceptions) {
+            npy_cache_import("numpy.core._internal", "TooHardError",
+                             &too_hard_cls);
+            if (too_hard_cls) {
+                PyErr_SetString(too_hard_cls, "Exceeded max_work");
+            }
+            return NULL;
+        }
+        else {
+            /* Don't know, so say yes */
+            Py_RETURN_TRUE;
+        }
+    }
+    else {
+        /* Doesn't happen usually */
+        PyErr_SetString(PyExc_RuntimeError,
+                        "Error in computing overlap");
+        return NULL;
+    }
+
+fail:
+    Py_XDECREF(self);
+    Py_XDECREF(other);
+    return NULL;
 }
+
+
+static PyObject *
+array_shares_memory(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
+{
+    return array_shares_memory_impl(args, kwds, NPY_MAY_SHARE_EXACT, 1);
+}
+
+
+static PyObject *
+array_may_share_memory(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
+{
+    return array_shares_memory_impl(args, kwds, NPY_MAY_SHARE_BOUNDS, 0);
+}
+
 
 static struct PyMethodDef array_module_methods[] = {
     {"_get_ndarray_c_version",
@@ -4123,9 +4177,12 @@ static struct PyMethodDef array_module_methods[] = {
     {"result_type",
         (PyCFunction)array_result_type,
         METH_VARARGS, NULL},
+    {"shares_memory",
+        (PyCFunction)array_shares_memory,
+        METH_VARARGS | METH_KEYWORDS, NULL},
     {"may_share_memory",
         (PyCFunction)array_may_share_memory,
-        METH_VARARGS, NULL},
+        METH_VARARGS | METH_KEYWORDS, NULL},
     /* Datetime-related functions */
     {"datetime_data",
         (PyCFunction)array_datetime_data,
@@ -4175,6 +4232,8 @@ static struct PyMethodDef array_module_methods[] = {
     {"digitize", (PyCFunction)arr_digitize,
         METH_VARARGS | METH_KEYWORDS, NULL},
     {"interp", (PyCFunction)arr_interp,
+        METH_VARARGS | METH_KEYWORDS, NULL},
+    {"interp_complex", (PyCFunction)arr_interp_complex,
         METH_VARARGS | METH_KEYWORDS, NULL},
     {"ravel_multi_index", (PyCFunction)arr_ravel_multi_index,
         METH_VARARGS | METH_KEYWORDS, NULL},
@@ -4431,7 +4490,7 @@ intern_strings(void)
 
     return npy_ma_str_array && npy_ma_str_array_prepare &&
            npy_ma_str_array_wrap && npy_ma_str_array_finalize &&
-           npy_ma_str_array_finalize && npy_ma_str_ufunc &&
+           npy_ma_str_buffer && npy_ma_str_ufunc &&
            npy_ma_str_order && npy_ma_str_copy && npy_ma_str_dtype &&
            npy_ma_str_ndmin;
 }
@@ -4471,6 +4530,15 @@ PyMODINIT_FUNC initmultiarray(void) {
     if (!m) {
         goto err;
     }
+
+#if defined(MS_WIN64) && defined(__GNUC__)
+  PyErr_WarnEx(PyExc_Warning,
+        "Numpy built with MINGW-W64 on Windows 64 bits is experimental, " \
+        "and only available for \n" \
+        "testing. You are advised not to use it for production. \n\n" \
+        "CRASHES ARE TO BE EXPECTED - PLEASE REPORT THEM TO NUMPY DEVELOPERS",
+        1);
+#endif
 
     /* Initialize access to the PyDateTime API */
     numpy_pydatetime_import();
@@ -4583,6 +4651,9 @@ PyMODINIT_FUNC initmultiarray(void) {
     ADDCONST(RAISE);
     ADDCONST(WRAP);
     ADDCONST(MAXDIMS);
+
+    ADDCONST(MAY_SHARE_BOUNDS);
+    ADDCONST(MAY_SHARE_EXACT);
 #undef ADDCONST
 
     Py_INCREF(&PyArray_Type);

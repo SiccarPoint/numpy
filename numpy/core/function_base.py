@@ -1,9 +1,23 @@
 from __future__ import division, absolute_import, print_function
 
+import warnings
+import operator
+
 __all__ = ['logspace', 'linspace']
 
 from . import numeric as _nx
-from .numeric import result_type, NaN
+from .numeric import result_type, NaN, shares_memory, MAY_SHARE_BOUNDS, TooHardError
+
+def _index_deprecate(i, stacklevel=2):
+    try:
+        i = operator.index(i)
+    except TypeError:
+        msg = ("object of type {} cannot be safely interpreted as "
+               "an integer.".format(type(i)))
+        i = int(i)
+        stacklevel += 1
+        warnings.warn(msg, DeprecationWarning, stacklevel=stacklevel)
+    return i
 
 
 def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
@@ -44,7 +58,7 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
         There are `num` equally spaced samples in the closed interval
         ``[start, stop]`` or the half-open interval ``[start, stop)``
         (depending on whether `endpoint` is True or False).
-    step : float
+    step : float, optional
         Only returned if `retstep` is True
 
         Size of spacing between samples.
@@ -81,7 +95,8 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
     >>> plt.show()
 
     """
-    num = int(num)
+    # 2016-02-25, 1.12
+    num = _index_deprecate(num)
     if num < 0:
         raise ValueError("Number of samples, %s, must be non-negative." % num)
     div = (num - 1) if endpoint else num
@@ -96,18 +111,23 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
 
     y = _nx.arange(0, num, dtype=dt)
 
+    delta = stop - start
     if num > 1:
-        delta = stop - start
         step = delta / div
         if step == 0:
             # Special handling for denormal numbers, gh-5437
             y /= div
-            y *= delta
+            y = y * delta
         else:
-            y *= step
+            # One might be tempted to use faster, in-place multiplication here,
+            # but this prevents step from overriding what class is produced,
+            # and thus prevents, e.g., use of Quantities; see gh-7142.
+            y = y * step
     else:
         # 0 and 1 item long sequences have an undefined step
         step = NaN
+        # Multiply with delta to allow possible override of output class.
+        y = y * delta
 
     y += start
 

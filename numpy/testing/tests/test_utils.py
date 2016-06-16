@@ -2,6 +2,7 @@ from __future__ import division, absolute_import, print_function
 
 import warnings
 import sys
+import os
 
 import numpy as np
 from numpy.testing import (
@@ -9,7 +10,8 @@ from numpy.testing import (
     assert_array_almost_equal, build_err_msg, raises, assert_raises,
     assert_warns, assert_no_warnings, assert_allclose, assert_approx_equal,
     assert_array_almost_equal_nulp, assert_array_max_ulp,
-    clear_and_catch_warnings, run_module_suite
+    clear_and_catch_warnings, run_module_suite,
+    assert_string_equal, assert_, tempdir, temppath, 
     )
 import unittest
 
@@ -225,6 +227,19 @@ class TestEqual(TestArrayEqual):
         self._assert_func(x, x)
         self._test_not_equal(x, y)
 
+    def test_error_message(self):
+        try:
+            self._assert_func(np.array([1, 2]), np.matrix([1, 2]))
+        except AssertionError as e:
+            self.assertEqual(
+                str(e),
+                "\nArrays are not equal\n\n"
+                "(shapes (2,), (1, 2) mismatch)\n"
+                " x: array([1, 2])\n"
+                " y: [repr failed for <matrix>: The truth value of an array "
+                "with more than one element is ambiguous. Use a.any() or "
+                "a.all()]")
+
 
 class TestArrayAlmostEqual(_GenericTest, unittest.TestCase):
 
@@ -431,6 +446,21 @@ class TestWarns(unittest.TestCase):
         assert_equal(assert_no_warnings(lambda x: x, 1), 1)
 
         # Check that the warnings state is unchanged
+        assert_equal(before_filters, after_filters,
+                     "assert_warns does not preserver warnings state")
+
+    def test_context_manager(self):
+
+        before_filters = sys.modules['warnings'].filters[:]
+        with assert_warns(UserWarning):
+            warnings.warn("yo")
+        after_filters = sys.modules['warnings'].filters
+
+        def no_warnings():
+            with assert_no_warnings():
+                warnings.warn("yo")
+
+        assert_raises(AssertionError, no_warnings)
         assert_equal(before_filters, after_filters,
                      "assert_warns does not preserver warnings state")
 
@@ -715,6 +745,22 @@ class TestULP(unittest.TestCase):
                                   lambda: assert_array_max_ulp(nan, nzero,
                                                                maxulp=maxulp))
 
+class TestStringEqual(unittest.TestCase):
+    def test_simple(self):
+        assert_string_equal("hello", "hello")
+        assert_string_equal("hello\nmultiline", "hello\nmultiline")
+
+        try:
+            assert_string_equal("foo\nbar", "hello\nbar")
+        except AssertionError as exc:
+            assert_equal(str(exc), "Differences in strings:\n- foo\n+ hello")
+        else:
+            raise AssertionError("exception not raised")
+
+        self.assertRaises(AssertionError,
+                          lambda: assert_string_equal("foo", "hello"))
+
+
 def assert_warn_len_equal(mod, n_in_context):
     mod_warns = mod.__warningregistry__
     # Python 3.4 appears to clear any pre-existing warnings of the same type,
@@ -761,6 +807,40 @@ def test_clear_and_catch_warnings():
         warnings.simplefilter('ignore')
         warnings.warn('Another warning')
     assert_warn_len_equal(my_mod, 2)
+
+
+def test_tempdir():
+    with tempdir() as tdir:
+        fpath = os.path.join(tdir, 'tmp')
+        with open(fpath, 'w'):
+            pass
+    assert_(not os.path.isdir(tdir))
+
+    raised = False
+    try:
+        with tempdir() as tdir:
+            raise ValueError()
+    except ValueError:
+        raised = True
+    assert_(raised)
+    assert_(not os.path.isdir(tdir))
+
+
+
+def test_temppath():
+    with temppath() as fpath:
+        with open(fpath, 'w') as f:
+            pass
+    assert_(not os.path.isfile(fpath))
+
+    raised = False
+    try:
+        with temppath() as fpath:
+            raise ValueError()
+    except ValueError:
+        raised = True
+    assert_(raised)
+    assert_(not os.path.isfile(fpath))
 
 
 class my_cacw(clear_and_catch_warnings):

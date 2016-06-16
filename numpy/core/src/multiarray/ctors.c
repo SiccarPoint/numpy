@@ -45,7 +45,18 @@ static int
 fromstr_next_element(char **s, void *dptr, PyArray_Descr *dtype,
                      const char *end)
 {
-    int r = dtype->f->fromstr(*s, dptr, s, dtype);
+    char *e = *s;
+    int r = dtype->f->fromstr(*s, dptr, &e, dtype);
+    /*
+     * fromstr always returns 0 for basic dtypes
+     * s points to the end of the parsed string
+     * if an error occurs s is not changed
+     */
+    if (*s == e) {
+        /* Nothing read */
+        return -1;
+    }
+    *s = e;
     if (end != NULL && *s > end) {
         return -1;
     }
@@ -57,7 +68,14 @@ fromfile_next_element(FILE **fp, void *dptr, PyArray_Descr *dtype,
                       void *NPY_UNUSED(stream_data))
 {
     /* the NULL argument is for backwards-compatibility */
-    return dtype->f->scanfunc(*fp, dptr, NULL, dtype);
+    int r = dtype->f->scanfunc(*fp, dptr, NULL, dtype);
+    /* r can be EOF or the number of items read (0 or 1) */
+    if (r == 1) {
+        return 0;
+    }
+    else {
+        return -1;
+    }
 }
 
 /*
@@ -677,11 +695,6 @@ discover_dimensions(PyObject *obj, int *maxndim, npy_intp *d, int check_it,
 
     /* obj is not a Sequence */
     if (!PySequence_Check(obj) ||
-#if defined(NPY_PY3K)
-        /* FIXME: XXX -- what is the correct thing to do here? */
-#else
-            PyInstance_Check(obj) ||
-#endif
             PySequence_Length(obj) < 0) {
         *maxndim = 0;
         PyErr_Clear();
@@ -881,15 +894,15 @@ discover_dimensions(PyObject *obj, int *maxndim, npy_intp *d, int check_it,
  *
  * steals a reference to descr (even on failure)
  */
-static PyObject *
+NPY_NO_EXPORT PyObject *
 PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
                          npy_intp *dims, npy_intp *strides, void *data,
-                         int flags, PyObject *obj, int zeroed)
+                         int flags, PyObject *obj, int zeroed,
+                         int allow_emptystring)
 {
     PyArrayObject_fields *fa;
     int i;
-    size_t sd;
-    npy_intp size;
+    npy_intp nbytes;
 
     if (descr->subarray) {
         PyObject *ret;
@@ -904,7 +917,8 @@ PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
                                          newstrides, nd);
         ret = PyArray_NewFromDescr_int(subtype, descr, nd, newdims,
                                        newstrides,
-                                       data, flags, obj, zeroed);
+                                       data, flags, obj, zeroed,
+                                       allow_emptystring);
         return ret;
     }
 
@@ -916,27 +930,28 @@ PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
         return NULL;
     }
 
-    /* Check dimensions */
-    size = 1;
-    sd = (size_t) descr->elsize;
-    if (sd == 0) {
-        if (!PyDataType_ISSTRING(descr)) {
+    /* Check datatype element size */
+    nbytes = descr->elsize;
+    if (nbytes == 0) {
+        if (!PyDataType_ISFLEXIBLE(descr)) {
             PyErr_SetString(PyExc_TypeError, "Empty data-type");
             Py_DECREF(descr);
             return NULL;
-        }
-        PyArray_DESCR_REPLACE(descr);
-        if (descr == NULL) {
-            return NULL;
-        }
-        if (descr->type_num == NPY_STRING) {
-            sd = descr->elsize = 1;
-        }
-        else {
-            sd = descr->elsize = sizeof(npy_ucs4);
+        } else if (PyDataType_ISSTRING(descr) && !allow_emptystring) {
+            PyArray_DESCR_REPLACE(descr);
+            if (descr == NULL) {
+                return NULL;
+            }
+            if (descr->type_num == NPY_STRING) {
+                nbytes = descr->elsize = 1;
+            }
+            else {
+                nbytes = descr->elsize = sizeof(npy_ucs4);
+            }
         }
     }
 
+    /* Check dimensions and multiply them to nbytes */
     for (i = 0; i < nd; i++) {
         npy_intp dim = dims[i];
 
@@ -961,9 +976,10 @@ PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
          * multiplying the dimensions together to get the total size of the
          * array.
          */
-        if (npy_mul_with_overflow_intp(&size, size, dim)) {
+        if (npy_mul_with_overflow_intp(&nbytes, nbytes, dim)) {
             PyErr_SetString(PyExc_ValueError,
-                            "array is too big.");
+                "array is too big; `arr.size * arr.dtype.itemsize` "
+                "is larger than the maximum possible size.");
             Py_DECREF(descr);
             return NULL;
         }
@@ -1002,9 +1018,9 @@ PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
         }
         fa->strides = fa->dimensions + nd;
         memcpy(fa->dimensions, dims, sizeof(npy_intp)*nd);
-        if (strides == NULL) { /* fill it in */
-            sd = _array_fill_strides(fa->strides, dims, nd, sd,
-                                     flags, &(fa->flags));
+        if (strides == NULL) {  /* fill it in */
+            _array_fill_strides(fa->strides, dims, nd, descr->elsize,
+                                flags, &(fa->flags));
         }
         else {
             /*
@@ -1012,7 +1028,6 @@ PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
              * the memory, but be careful with this...
              */
             memcpy(fa->strides, strides, sizeof(npy_intp)*nd);
-            sd *= size;
         }
     }
     else {
@@ -1026,19 +1041,18 @@ PyArray_NewFromDescr_int(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
          * e.g. shape=(0,) -- otherwise buffer exposure
          * (a.data) doesn't work as it should.
          */
-
-        if (sd == 0) {
-            sd = descr->elsize;
+        if (nbytes == 0) {
+            nbytes = descr->elsize;
         }
         /*
-         * It is bad to have unitialized OBJECT pointers
+         * It is bad to have uninitialized OBJECT pointers
          * which could also be sub-fields of a VOID array
          */
         if (zeroed || PyDataType_FLAGCHK(descr, NPY_NEEDS_INIT)) {
-            data = npy_alloc_cache_zero(sd);
+            data = npy_alloc_cache_zero(nbytes);
         }
         else {
-            data = npy_alloc_cache(sd);
+            data = npy_alloc_cache(nbytes);
         }
         if (data == NULL) {
             PyErr_NoMemory();
@@ -1123,7 +1137,7 @@ PyArray_NewFromDescr(PyTypeObject *subtype, PyArray_Descr *descr, int nd,
 {
     return PyArray_NewFromDescr_int(subtype, descr, nd,
                                     dims, strides, data,
-                                    flags, obj, 0);
+                                    flags, obj, 0, 0);
 }
 
 /*NUMPY_API
@@ -1908,14 +1922,34 @@ PyArray_FromArray(PyArrayObject *arr, PyArray_Descr *newtype, int flags)
     /* Raise an error if the casting rule isn't followed */
     if (!PyArray_CanCastArrayTo(arr, newtype, casting)) {
         PyObject *errmsg;
+        PyArray_Descr *arr_descr = NULL;
+        PyObject *arr_descr_repr = NULL;
+        PyObject *newtype_repr = NULL;
 
+        PyErr_Clear();
         errmsg = PyUString_FromString("Cannot cast array data from ");
-        PyUString_ConcatAndDel(&errmsg,
-                PyObject_Repr((PyObject *)PyArray_DESCR(arr)));
+        arr_descr = PyArray_DESCR(arr);
+        if (arr_descr == NULL) {
+            Py_DECREF(newtype);
+            Py_DECREF(errmsg);
+            return NULL;
+        }
+        arr_descr_repr = PyObject_Repr((PyObject *)arr_descr);
+        if (arr_descr_repr == NULL) {
+            Py_DECREF(newtype);
+            Py_DECREF(errmsg);
+            return NULL;
+        }
+        PyUString_ConcatAndDel(&errmsg, arr_descr_repr);
         PyUString_ConcatAndDel(&errmsg,
                 PyUString_FromString(" to "));
-        PyUString_ConcatAndDel(&errmsg,
-                PyObject_Repr((PyObject *)newtype));
+        newtype_repr = PyObject_Repr((PyObject *)newtype);
+        if (newtype_repr == NULL) {
+            Py_DECREF(newtype);
+            Py_DECREF(errmsg);
+            return NULL;
+        }
+        PyUString_ConcatAndDel(&errmsg, newtype_repr);
         PyUString_ConcatAndDel(&errmsg,
                 PyUString_FromFormat(" according to the rule %s",
                         npy_casting_to_string(casting)));
@@ -2824,7 +2858,7 @@ PyArray_Zeros(int nd, npy_intp *dims, PyArray_Descr *type, int is_f_order)
                                                     type,
                                                     nd, dims,
                                                     NULL, NULL,
-                                                    is_f_order, NULL, 1);
+                                                    is_f_order, NULL, 1, 0);
 
     if (ret == NULL) {
         return NULL;
@@ -3279,6 +3313,7 @@ array_from_text(PyArray_Descr *dtype, npy_intp num, char *sep, size_t *nread,
     dptr = PyArray_DATA(r);
     for (i= 0; num < 0 || i < num; i++) {
         if (next(&stream, dptr, dtype, stream_data) < 0) {
+            /* EOF */
             break;
         }
         *nread += 1;
@@ -3356,10 +3391,12 @@ PyArray_FromFile(FILE *fp, PyArray_Descr *dtype, npy_intp num, char *sep)
         return NULL;
     }
     if (dtype->elsize == 0) {
-        PyErr_SetString(PyExc_ValueError,
-                "The elements are 0-sized.");
-        Py_DECREF(dtype);
-        return NULL;
+        /* Nothing to read, just create an empty array of the requested type */
+        return PyArray_NewFromDescr_int(&PyArray_Type,
+                                        dtype,
+                                        1, &num,
+                                        NULL, NULL,
+                                        0, NULL, 0, 1);
     }
     if ((sep == NULL) || (strlen(sep) == 0)) {
         ret = array_fromfile_binary(fp, dtype, num, &nread);
@@ -3738,9 +3775,11 @@ PyArray_FromIter(PyObject *obj, PyArray_Descr *dtype, npy_intp count)
  * If data is not given but created here, then flags will be NPY_ARRAY_DEFAULT
  * and a non-zero flags argument can be used to indicate a FORTRAN style
  * array is desired.
+ *
+ * Dimensions and itemsize must have been checked for validity.
  */
 
-NPY_NO_EXPORT size_t
+NPY_NO_EXPORT void
 _array_fill_strides(npy_intp *strides, npy_intp *dims, int nd, size_t itemsize,
                     int inflag, int *objflags)
 {
@@ -3819,7 +3858,7 @@ _array_fill_strides(npy_intp *strides, npy_intp *dims, int nd, size_t itemsize,
             *objflags |= (NPY_ARRAY_C_CONTIGUOUS|NPY_ARRAY_F_CONTIGUOUS);
         }
     }
-    return itemsize;
+    return;
 }
 
 /*

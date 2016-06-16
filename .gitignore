@@ -105,6 +105,7 @@ numpy/core/include/numpy/__ufunc_api.h
 numpy/core/include/numpy/_numpyconfig.h
 numpy/version.py
 site.cfg
+setup.cfg
 .tox
 numpy/core/include/numpy/__multiarray_api.c
 numpy/core/include/numpy/__ufunc_api.c
@@ -142,6 +143,9 @@ numpy/core/src/umath/umath_tests.c
 numpy/distutils/__config__.py
 numpy/linalg/umath_linalg.c
 doc/source/reference/generated
+benchmarks/results
+benchmarks/env
+benchmarks/numpy
 # cythonized files
 cythonize.dat
 numpy/random/mtrand/mtrand.c

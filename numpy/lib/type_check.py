@@ -424,7 +424,7 @@ def real_if_close(a,tol=100):
         from numpy.core import getlimits
         f = getlimits.finfo(a.dtype.type)
         tol = f.eps * tol
-    if _nx.allclose(a.imag, 0, atol=tol):
+    if _nx.all(_nx.absolute(a.imag) < tol):
         a = a.real
     return a
 
@@ -501,7 +501,7 @@ def typename(char):
     >>> typechars = ['S1', '?', 'B', 'D', 'G', 'F', 'I', 'H', 'L', 'O', 'Q',
     ...              'S', 'U', 'V', 'b', 'd', 'g', 'f', 'i', 'h', 'l', 'q']
     >>> for typechar in typechars:
-    ...     print typechar, ' : ', np.typename(typechar)
+    ...     print(typechar, ' : ', np.typename(typechar))
     ...
     S1  :  character
     ?  :  bool

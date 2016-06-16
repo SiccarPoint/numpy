@@ -256,6 +256,16 @@ class TestRecord(TestCase):
         dt2 = np.dtype((np.void, dt.fields))
         assert_equal(dt2.fields, dt.fields)
 
+    def test_from_dict_with_zero_width_field(self):
+        # Regression test for #6430 / #2196
+        dt = np.dtype([('val1', np.float32, (0,)), ('val2', int)])
+        dt2 = np.dtype({'names': ['val1', 'val2'],
+                        'formats': [(np.float32, (0,)), int]})
+
+        assert_dtype_equal(dt, dt2)
+        assert_equal(dt.fields['val1'][0].itemsize, 0)
+        assert_equal(dt.itemsize, dt.fields['val2'][0].itemsize)
+
     def test_bool_commastring(self):
         d = np.dtype('?,?,?')  # raises?
         assert_equal(len(d.names), 3)
@@ -408,6 +418,10 @@ class TestMetadata(TestCase):
         d = np.dtype([('a', np.dtype(int, metadata={'datum': 1}))])
         self.assertEqual(d['a'].metadata, {'datum': 1})
 
+    def base_metadata_copied(self):
+        d = np.dtype((np.void, np.dtype('i4,i4', metadata={'datum': 1})))
+        assert_equal(d.metadata, {'datum': 1})
+
 class TestString(TestCase):
     def test_complex_dtype_str(self):
         dt = np.dtype([('top', [('tiles', ('>f4', (64, 64)), (1,)),
@@ -535,7 +549,7 @@ class TestString(TestCase):
         # Pull request #4722
         np.array(["", ""]).astype(object)
 
-class TestDtypeAttributeDeletion(object):
+class TestDtypeAttributeDeletion(TestCase):
 
     def test_dtype_non_writable_attributes_deletion(self):
         dt = np.dtype(np.double)
@@ -551,6 +565,19 @@ class TestDtypeAttributeDeletion(object):
         attr = ["names"]
         for s in attr:
             assert_raises(AttributeError, delattr, dt, s)
+
+
+class TestDtypeAttributes(TestCase):
+    def test_descr_has_trailing_void(self):
+        # see gh-6359
+        dtype = np.dtype({
+            'names': ['A', 'B'],
+            'formats': ['f4', 'f4'],
+            'offsets': [0, 8],
+            'itemsize': 16})
+        new_dtype = np.dtype(dtype.descr)
+        assert_equal(new_dtype.itemsize, 16)
+
 
 class TestDtypeAttributes(TestCase):
 
@@ -572,6 +599,10 @@ def test_rational_dtype():
     # test for bug gh-5719
     a = np.array([1111], dtype=rational).astype
     assert_raises(OverflowError, a, 'int8')
+
+    # test that dtype detection finds user-defined types
+    x = rational(1)
+    assert_equal(np.array([x,x]).dtype, np.dtype(rational))
 
 
 if __name__ == "__main__":

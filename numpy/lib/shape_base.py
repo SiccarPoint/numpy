@@ -35,7 +35,7 @@ def apply_along_axis(func1d, axis, arr, *args, **kwargs):
         Input array.
     args : any
         Additional arguments to `func1d`.
-    kwargs: any
+    kwargs : any
         Additional named arguments to `func1d`.
 
         .. versionadded:: 1.9.0
@@ -325,6 +325,10 @@ def dstack(tup):
     This is a simple way to stack 2D arrays (images) into a single
     3D array for processing.
 
+    This function continues to be supported for backward compatibility, but
+    you should prefer ``np.concatenate`` or ``np.stack``. The ``np.stack``
+    function was added in NumPy 1.10.
+
     Parameters
     ----------
     tup : sequence of arrays
@@ -421,17 +425,8 @@ def array_split(ary, indices_or_sections, axis=0):
         end = div_points[i + 1]
         sub_arys.append(_nx.swapaxes(sary[st:end], axis, 0))
 
-    # This "kludge" was introduced here to replace arrays shaped (0, 10)
-    # or similar with an array shaped (0,).
-    # There seems no need for this, so give a FutureWarning to remove later.
-    if sub_arys[-1].size == 0 and sub_arys[-1].ndim != 1:
-        warnings.warn("in the future np.array_split will retain the shape of "
-                      "arrays with a zero size, instead of replacing them by "
-                      "`array([])`, which always has a shape of (0,).",
-                      FutureWarning)
-        sub_arys = _replace_zero_by_x_arrays(sub_arys)
-
     return sub_arys
+
 
 def split(ary,indices_or_sections,axis=0):
     """
@@ -808,6 +803,9 @@ def tile(A, reps):
     Thus for an `A` of shape (2, 3, 4, 5), a `reps` of (2, 2) is treated as
     (1, 1, 2, 2).
 
+    Note : Although tile may be used for broadcasting, it is strongly
+    recommended to use numpy's broadcasting operations and functions.
+
     Parameters
     ----------
     A : array_like
@@ -823,6 +821,7 @@ def tile(A, reps):
     See Also
     --------
     repeat : Repeat elements of an array.
+    broadcast_to : Broadcast an array to a new shape
 
     Examples
     --------
@@ -846,6 +845,12 @@ def tile(A, reps):
            [1, 2],
            [3, 4]])
 
+    >>> c = np.array([1,2,3,4])
+    >>> np.tile(c,(4,1))
+    array([[1, 2, 3, 4],
+           [1, 2, 3, 4],
+           [1, 2, 3, 4],
+           [1, 2, 3, 4]])
     """
     try:
         tup = tuple(reps)

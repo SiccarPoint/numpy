@@ -88,6 +88,8 @@ This approach to the interface consists of the object having an
        ``u``  Unsigned integer
        ``f``  Floating point
        ``c``  Complex floating point
+       ``m``  Timedelta
+       ``M``  Datetime
        ``O``  Object (i.e. the memory contains a pointer to :c:type:`PyObject`)
        ``S``  String (fixed-length sequence of char)
        ``U``  Unicode (fixed-length sequence of :c:type:`Py_UNICODE`)
@@ -153,7 +155,7 @@ This approach to the interface consists of the object having an
        dimension. Each entry must be an integer (a Python
        :const:`int` or :const:`long`). As with shape, the values may
        be larger than can be represented by a C "int" or "long"; the
-       calling code should handle this appropiately, either by
+       calling code should handle this appropriately, either by
        raising an error, or by using :c:type:`Py_LONG_LONG` in C. The
        default is :const:`None` which implies a C-style contiguous
        memory buffer.  In this model, the last dimension of the array
@@ -308,7 +310,7 @@ Differences with Array interface (Version 2)
 ============================================
 
 The version 2 interface was very similar.  The differences were
-largely asthetic.  In particular:
+largely aesthetic.  In particular:
 
 1. The PyArrayInterface structure had no descr member at the end
    (and therefore no flag ARR_HAS_DESCR)
